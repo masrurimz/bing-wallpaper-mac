@@ -49,8 +49,8 @@ Each run cycles to the next region, giving you different wallpapers throughout t
 ### Quick Install
 
 ```bash
-git clone https://github.com/masrurimz/bing-wallpaper-mac.git
-cd bing-wallpaper-mac
+git clone https://github.com/masrurimz/bing-wallpaper-mac.git ~/.local/share/bing-wallpaper-mac
+cd ~/.local/share/bing-wallpaper-mac
 ./install.sh
 ```
 
