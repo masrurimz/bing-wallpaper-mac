@@ -296,19 +296,36 @@ download_bing_wallpaper() {
     return 0
 }
 
-# Set desktop wallpaper (all spaces via sqlite + AppleScript fallback)
+# Set desktop wallpaper (all spaces via sqlite + AppleScript)
 set_wallpaper() {
     wallpaper_path=$1
     local db_path="$HOME/Library/Application Support/Dock/desktoppicture.db"
     
-    # Update all spaces via sqlite
+    # Reset database and set wallpaper for all spaces
     if [[ -f "$db_path" ]]; then
-        sqlite3 "$db_path" "UPDATE data SET value = '$wallpaper_path';"
+        # Delete existing entries and insert fresh one
+        sqlite3 "$db_path" << EOF
+DELETE FROM data;
+DELETE FROM preferences;
+DELETE FROM pictures;
+DELETE FROM spaces;
+DELETE FROM displays;
+INSERT INTO data VALUES('$wallpaper_path');
+INSERT INTO pictures VALUES(NULL, NULL);
+INSERT INTO preferences VALUES(1, 1, 1);
+EOF
         killall Dock
+        sleep 1
     fi
     
-    # AppleScript fallback for current desktop
-    osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"$wallpaper_path\""
+    # AppleScript to set all physical desktops
+    osascript << EOF
+tell application "System Events"
+    repeat with i from 1 to (count of desktops)
+        tell desktop i to set picture to "$wallpaper_path"
+    end repeat
+end tell
+EOF
 }
 
 # Clean up wallpapers older than specified days
