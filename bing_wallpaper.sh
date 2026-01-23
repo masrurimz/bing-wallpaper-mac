@@ -115,19 +115,35 @@ get_current_region() {
         return
     fi
     
-    # Cycle mode: rotate through regions
+    # Cycle mode: find a region with today's wallpaper, cycling through
     local current_index=0
     if [[ -f "$REGION_STATE_FILE" ]]; then
         current_index=$(cat "$REGION_STATE_FILE")
     fi
     
-    # Get region at current index
+    local today=$(date +%Y%m%d)
+    local attempts=0
+    local max_attempts=${#BING_REGIONS[@]}
+    
+    while [ $attempts -lt $max_attempts ]; do
+        local region="${BING_REGIONS[$current_index]}"
+        local bing_date=$(curl -s "${BING_JSON_ENDPOINT}&mkt=${region}" | jq -r '.images[0].startdate')
+        
+        # Increment for next iteration/run
+        current_index=$(( (current_index + 1) % ${#BING_REGIONS[@]} ))
+        attempts=$((attempts + 1))
+        
+        # Check if this region has today's wallpaper
+        if [[ "$bing_date" == "$today" ]]; then
+            echo "$current_index" > "$REGION_STATE_FILE"
+            echo "$region"
+            return
+        fi
+    done
+    
+    # Fallback: no region has today's date, use current index anyway
     local region="${BING_REGIONS[$current_index]}"
-    
-    # Increment and wrap around for next run
-    local next_index=$(( (current_index + 1) % ${#BING_REGIONS[@]} ))
-    echo "$next_index" > "$REGION_STATE_FILE"
-    
+    echo "$current_index" > "$REGION_STATE_FILE"
     echo "$region"
 }
 
