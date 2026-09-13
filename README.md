@@ -1,88 +1,74 @@
-# 🖼️ Bing Wallpaper for macOS
+# bing-wallpaper
 
-Bing daily wallpaper for macOS. Written in Rust with a CLI-first interface.
-
-## Build
-
-```bash
-cargo build --release
-```
-
-Binary: `target/release/bing_wallpaper`
+Update your macOS desktop with Bing's daily images. The `bing_wallpaper` agent runs every hour, downloads one new image per market, deduplicates by content key, and sets a random wallpaper from the archive.
 
 ## Install
 
+1. Build the binary:
+
+	```bash
+	git clone https://github.com/masrurimz/bing-wallpaper-mac.git
+	cd bing-wallpaper-mac
+	cargo build --release
+	```
+
+2. Install the binary and the LaunchAgent:
+
+	```bash
+	cp target/release/bing_wallpaper ~/.local/bin/
+	bing_wallpaper init
+	```
+
+`init` creates `~/.config/bing-wallpaper/config`, writes `~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist`, and loads it with `launchctl`.
+
+## Use
+
+The agent runs every hour automatically. To run once by hand:
+
 ```bash
-cargo build --release
-cp target/release/bing_wallpaper ~/.local/bin/
-bing_wallpaper init
+bing_wallpaper run
 ```
 
-`init` creates `~/.config/bing-wallpaper/config`, installs the LaunchAgent into `~/Library/LaunchAgents/`, and loads it with `launchctl`.
-
-## CLI
-
-```
-bing_wallpaper [COMMAND]
-
-Commands:
-  run     Run one update cycle (default)
-  prune   Remove byte-duplicate images
-  status  Print config and archive status
-  config  Show or set config values
-  init    Create default config and install the LaunchAgent
-```
+To see the current state:
 
 ```bash
-bing_wallpaper config              # interactive TUI form
-bing_wallpaper config --show       # print current config
-bing_wallpaper config --set RESOLUTION=FHD
+bing_wallpaper status
 ```
 
-`~/.config/bing-wallpaper/config` (KEY=value)
+To remove duplicate files:
 
-- `RESOLUTION` — `UHD` (default), `FHD`, `HD`, or `auto`
-- `AUTO_CLEANUP` — `true` / `false`
-- `CLEANUP_DAYS` — default `14`
-- `SAVE_PATH` — default `~/.wallpapers`
-- `REGION_MODE` — `cycle` (default) or `single`
-- `REGION` — default `en-US` (used when `REGION_MODE=single`)
+```bash
+bing_wallpaper prune
+```
 
-### Read / edit config
+To change settings interactively:
 
 ```bash
 bing_wallpaper config
-bing_wallpaper config --show
+```
+
+To set one value directly:
+
+```bash
 bing_wallpaper config --set RESOLUTION=FHD
 ```
 
-## How it works
-
-1. The LaunchAgent runs `bing_wallpaper run` every hour.
-2. Fetches Bing's daily JSON for each market.
-3. Skips images already seen by their content key, and skips downloads if a matching file already exists.
-4. New images are saved to `~/.wallpapers` with a `.txt` sidecar.
-5. Old files are removed based on `CLEANUP_DAYS`.
-6. A random wallpaper from the archive is picked and applied via the `wallpaper` crate.
-
-## Dependencies
-
-- `reqwest` / `tokio` — HTTP client
-- `serde_json` — Bing JSON parsing
-- `inquire` — interactive terminal prompts
-- `rust-ini` — config parsing
-- `rdev` — screen resolution detection
-- `wallpaper` — desktop wallpaper setting
-- `users` — user id for `launchctl`
-- `rand` — random shuffle
-- `tracing` / `tracing-subscriber` — logging
-
-## Logs
+To print the current config:
 
 ```bash
-~/.config/bing-wallpaper/bing_wallpaper.out
-~/.config/bing-wallpaper/bing_wallpaper.err
+bing_wallpaper config --show
 ```
+
+## Config
+
+`~/.config/bing-wallpaper/config` uses `KEY=value` format.
+
+- `RESOLUTION`: `UHD` (default), `FHD`, `HD`, or `auto`
+- `AUTO_CLEANUP`: `true` (default) or `false`
+- `CLEANUP_DAYS`: number of days to keep wallpapers (default `14`)
+- `SAVE_PATH`: wallpaper directory (default `~/.wallpapers`)
+- `REGION_MODE`: `cycle` (default) or `single`
+- `REGION`: the market to use when `REGION_MODE=single` (default `en-US`)
 
 ## Uninstall
 
@@ -91,9 +77,6 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.masrurimz.bingwallpape
 rm ~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist
 rm ~/.local/bin/bing_wallpaper
 rm -rf ~/.config/bing-wallpaper
-# optional: rm -rf ~/.wallpapers
 ```
 
-## License
-
-[MIT](LICENSE)
+Keep `~/.wallpapers` if you want to save the images.
