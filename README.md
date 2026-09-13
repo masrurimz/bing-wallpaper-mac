@@ -1,14 +1,6 @@
 # 🖼️ Bing Wallpaper for macOS
 
-Bing daily wallpaper for macOS — now a Rust binary. The LaunchAgent just triggers it hourly; the binary does the rest.
-
-## Features
-
-- Region cycling through 12 Bing markets
-- Deduplication by image content key (`OHR.{ID}`) across markets
-- Auto-cleanup of wallpapers older than `CLEANUP_DAYS`
-- Random shuffle of all saved wallpapers on every run
-- High quality: UHD, FHD, HD, or auto-detected
+Bing daily wallpaper for macOS. Written in Rust with a CLI-first interface.
 
 ## Build
 
@@ -23,8 +15,22 @@ Binary: `target/release/bing_wallpaper`
 ```bash
 cargo build --release
 cp target/release/bing_wallpaper ~/.local/bin/
-cp com.masrurimz.bingwallpaper.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist
+bing_wallpaper init
+```
+
+`init` creates `~/.config/bing-wallpaper/config`, installs the LaunchAgent into `~/Library/LaunchAgents/`, and loads it with `launchctl`.
+
+## CLI
+
+```
+bing_wallpaper [COMMAND]
+
+Commands:
+  run     Run one update cycle (default)
+  prune   Remove byte-duplicate images
+  status  Print config and archive status
+  config  Show or set config values
+  init    Create default config and install the LaunchAgent
 ```
 
 ## Config
@@ -38,21 +44,33 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.masrurimz.bingwallpa
 - `REGION_MODE` — `cycle` (default) or `single`
 - `REGION` — default `en-US` (used when `REGION_MODE=single`)
 
-## Usage
+### Read / edit config
 
 ```bash
-bing_wallpaper          # one hourly update: fetch new, cleanup, set random desktop
-bing_wallpaper --prune  # remove byte-duplicate images from the archive
+bing_wallpaper config
+bing_wallpaper config --show
+bing_wallpaper config --set RESOLUTION=FHD
 ```
 
 ## How it works
 
-1. The LaunchAgent runs the binary every hour.
-2. The binary fetches Bing's daily JSON for each market.
-3. It skips images already seen by their content key, and skips downloads if a matching file already exists.
+1. The LaunchAgent runs `bing_wallpaper run` every hour.
+2. Fetches Bing's daily JSON for each market.
+3. Skips images already seen by their content key, and skips downloads if a matching file already exists.
 4. New images are saved to `~/.wallpapers` with a `.txt` sidecar.
 5. Old files are removed based on `CLEANUP_DAYS`.
-6. A random wallpaper from the archive is picked and applied to all desktops via `osascript`.
+6. A random wallpaper from the archive is picked and applied via the `wallpaper` crate.
+
+## Dependencies
+
+- `reqwest` / `tokio` — HTTP client
+- `serde_json` — Bing JSON parsing
+- `rust-ini` — config parsing
+- `rdev` — screen resolution detection
+- `wallpaper` — desktop wallpaper setting
+- `users` — user id for `launchctl`
+- `rand` — random shuffle
+- `tracing` / `tracing-subscriber` — logging
 
 ## Logs
 

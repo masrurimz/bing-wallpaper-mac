@@ -1,14 +1,19 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Local;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use ini::Ini;
 use md5::{Digest, Md5};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration as StdDuration, SystemTime};
+use tracing::info;
+use users::get_current_uid;
 
 const BING_JSON_ENDPOINT: &str = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1";
 const BING_IMAGE_ENDPOINT: &str = "https://www.bing.com";
@@ -19,14 +24,30 @@ const REGIONS: &[&str] = &[
 
 #[derive(Parser)]
 #[command(name = "bing_wallpaper")]
-#[command(about = "Bing wallpaper fetcher — shuffles and sets the desktop")]
+#[command(about = "Bing wallpaper fetcher for macOS")]
+#[command(version)]
 struct Cli {
-    /// Kept for LaunchAgent compatibility; ignored.
-    #[arg(long, hide = true)]
-    force: bool,
-    /// Remove byte-duplicate images from the archive.
-    #[arg(long)]
-    prune: bool,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run one update cycle (default)
+    Run,
+    /// Remove byte-duplicate images
+    Prune,
+    /// Print config and archive status
+    Status,
+    /// Show or set config values
+    Config {
+        #[arg(long)]
+        show: bool,
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Vec<String>,
+    },
+    /// Create default config and install the LaunchAgent
+    Init,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +79,28 @@ impl Config {
         fs::create_dir_all(&self.save_path)?;
         fs::create_dir_all(config_dir()?)?;
         Ok(())
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> Result<()> {
+        match key {
+            "RESOLUTION" => self.resolution = value.into(),
+            "AUTO_CLEANUP" => self.auto_cleanup = value.eq_ignore_ascii_case("true"),
+            "CLEANUP_DAYS" => self.cleanup_days = value.parse().context("invalid CLEANUP_DAYS")?,
+            "SAVE_PATH" => self.save_path = expand_path(value),
+            "REGION_MODE" => self.region_mode = value.into(),
+            "REGION" => self.region = value.into(),
+            _ => return Err(anyhow!("unknown config key: {}", key)),
+        }
+        Ok(())
+    }
+
+    fn print(&self) {
+        println!("RESOLUTION={}", self.resolution);
+        println!("AUTO_CLEANUP={}", self.auto_cleanup);
+        println!("CLEANUP_DAYS={}", self.cleanup_days);
+        println!("SAVE_PATH={}", self.save_path.display());
+        println!("REGION_MODE={}", self.region_mode);
+        println!("REGION={}", self.region);
     }
 }
 
@@ -96,26 +139,25 @@ fn load_config() -> Result<Config> {
     if !path.exists() {
         return Ok(cfg);
     }
-    let f = File::open(&path)?;
-    let r = BufReader::new(f);
-    for line in r.lines() {
-        let line = line?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
+    let conf = Ini::load_from_file(&path)?;
+    if let Some(props) = conf.section(None::<&str>) {
+        if let Some(v) = props.get("RESOLUTION") {
+            cfg.resolution = v.to_string();
         }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            let k = k.trim();
-            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
-            match k {
-                "RESOLUTION" => cfg.resolution = v,
-                "AUTO_CLEANUP" => cfg.auto_cleanup = v.eq_ignore_ascii_case("true"),
-                "CLEANUP_DAYS" => cfg.cleanup_days = v.parse().unwrap_or(14),
-                "SAVE_PATH" => cfg.save_path = expand_path(&v),
-                "REGION_MODE" => cfg.region_mode = v,
-                "REGION" => cfg.region = v,
-                _ => {}
-            }
+        if let Some(v) = props.get("AUTO_CLEANUP") {
+            cfg.auto_cleanup = v.eq_ignore_ascii_case("true");
+        }
+        if let Some(v) = props.get("CLEANUP_DAYS") {
+            cfg.cleanup_days = v.parse().context("invalid CLEANUP_DAYS")?;
+        }
+        if let Some(v) = props.get("SAVE_PATH") {
+            cfg.save_path = expand_path(v);
+        }
+        if let Some(v) = props.get("REGION_MODE") {
+            cfg.region_mode = v.to_string();
+        }
+        if let Some(v) = props.get("REGION") {
+            cfg.region = v.to_string();
         }
     }
     Ok(cfg)
@@ -186,19 +228,8 @@ fn resolution_name(res: &str) -> &str {
 }
 
 fn get_screen_resolution() -> Option<(u32, u32)> {
-    let out = Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-xml"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(out.stdout).ok()?;
-    for token in text.split(|c: char| !c.is_ascii_digit() && c != 'x') {
-        if let Some((w, h)) = token.split_once('x') {
-            if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
-                return Some((w, h));
-            }
-        }
-    }
-    None
+    let (w, h) = rdev::display_size().ok()?;
+    Some((w as u32, h as u32))
 }
 
 fn pick_resolution(cfg: &Config) -> String {
@@ -232,7 +263,6 @@ async fn fetch_json(client: &reqwest::Client, region: &str) -> Result<Value> {
 }
 
 fn content_key(urlbase: &str) -> String {
-    // /th?id=OHR.MisurinaPeak_PT-BR1204765846 -> /th?id=OHR.MisurinaPeak
     urlbase
         .split('_')
         .next()
@@ -242,10 +272,10 @@ fn content_key(urlbase: &str) -> String {
 
 fn parse_meta(json: &Value, region: &str, res_name: &str) -> Option<ImageMeta> {
     let img = json.get("images")?.get(0)?;
+    let urlbase = img.get("urlbase")?.as_str()?;
     let startdate = img.get("startdate")?.as_str()?.to_string();
     let title = img.get("title")?.as_str().unwrap_or("").to_string();
     let copyright = img.get("copyright")?.as_str().unwrap_or("").to_string();
-    let urlbase = img.get("urlbase")?.as_str()?;
     let res_val = resolution_value(res_name);
     let url = format!("{}{}_{}.jpg", BING_IMAGE_ENDPOINT, urlbase, res_val);
     Some(ImageMeta {
@@ -281,6 +311,7 @@ async fn find_new_image(
         let json = fetch_json(client, region).await?;
         if let Some(meta) = parse_meta(&json, region, &res_name) {
             if meta.startdate == today && !seen.contains(&meta.content_key) {
+                info!("new image found: {} {}", region, meta.content_key);
                 return Ok(Some(meta));
             }
         }
@@ -294,7 +325,6 @@ fn has_existing_image(save_path: &Path, startdate: &str, region: &str, res: &str
         return true;
     }
 
-    // Old bash script naming: bing_{startdate}_{hhmm}_{region}_{res}.jpg
     let prefix = format!("bing_{}_", startdate);
     let suffix = format!("_{}_{}.jpg", region, res);
     if let Ok(entries) = fs::read_dir(save_path) {
@@ -319,15 +349,13 @@ async fn download_image(client: &reqwest::Client, meta: &ImageMeta, save_path: &
 
     if has_existing_image(save_path, &meta.startdate, &meta.region, res_val) {
         append_seen(&meta.content_key)?;
-        println!(
-            "Already on disk: {} {} ({})",
-            meta.region, meta.startdate, filename
-        );
-        println!("Title: {}", meta.title);
-        println!("Copyright: {}", meta.copyright);
+        info!("already on disk: {} ({})", meta.region, filename);
+        info!("title: {}", meta.title);
+        info!("copyright: {}", meta.copyright);
         return Ok(());
     }
 
+    info!("downloading {}", meta.url);
     let bytes = client
         .get(&meta.url)
         .send()
@@ -342,10 +370,10 @@ async fn download_image(client: &reqwest::Client, meta: &ImageMeta, save_path: &
     writeln!(f, "{}", meta.copyright)?;
     append_seen(&meta.content_key)?;
 
-    println!("Downloaded {}", path.display());
-    println!("Resolution: {}", resolution_name(&meta.resolution));
-    println!("Title: {}", meta.title);
-    println!("Copyright: {}", meta.copyright);
+    info!("saved {}", path.display());
+    info!("resolution: {}", resolution_name(&meta.resolution));
+    info!("title: {}", meta.title);
+    info!("copyright: {}", meta.copyright);
     Ok(())
 }
 
@@ -363,7 +391,7 @@ fn cleanup_old_files(save_path: &Path, days: i64) -> Result<()> {
                 if let Ok(age) = SystemTime::now().duration_since(modified) {
                     if age.as_secs() > threshold {
                         fs::remove_file(&path)?;
-                        println!("Cleaned up {}", path.display());
+                        info!("cleaned up {}", path.display());
                     }
                 }
             }
@@ -373,7 +401,7 @@ fn cleanup_old_files(save_path: &Path, days: i64) -> Result<()> {
 }
 
 fn prune_duplicates(save_path: &Path) -> Result<usize> {
-    let mut seen = std::collections::HashMap::<String, PathBuf>::new();
+    let mut seen = HashMap::<String, PathBuf>::new();
     let mut removed = 0usize;
     for entry in fs::read_dir(save_path)? {
         let entry = entry?;
@@ -399,7 +427,7 @@ fn prune_duplicates(save_path: &Path) -> Result<usize> {
                 fs::remove_file(&sidecar)?;
             }
             removed += 1;
-            println!("Removed duplicate {}", path.display());
+            info!("removed duplicate {}", path.display());
         } else {
             seen.insert(hash, path);
         }
@@ -419,60 +447,22 @@ fn pick_random_wallpaper(save_path: &Path) -> Result<PathBuf> {
     if entries.is_empty() {
         return Err(anyhow!("no wallpapers in {}", save_path.display()));
     }
-    let idx = (SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs() as usize)
-        % entries.len();
-    Ok(entries[idx].clone())
+    let mut rng = thread_rng();
+    Ok(entries.choose(&mut rng).unwrap().clone())
 }
 
-async fn set_random_wallpaper(save_path: &Path) -> Result<()> {
+fn set_random_wallpaper(save_path: &Path) -> Result<()> {
     let path = pick_random_wallpaper(save_path)?;
-    let path_str = path.canonicalize()?.to_string_lossy().into_owned();
-    let script = format!(
-        r#"tell application "System Events"
-    set picFile to POSIX file "{}"
-    repeat with i from 1 to count of desktops
-        tell desktop i to set picture to picFile
-    end repeat
-end tell"#,
-        path_str
-    );
-    let out = tokio::task::spawn_blocking(move || {
-        let out = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "osascript failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Ok(())
-    })
-    .await?;
-    out?;
-    println!("Set desktop to {}", path.display());
+    let path_str = path.to_string_lossy().into_owned();
+    info!("setting desktop to {}", path.display());
+    wallpaper::set_from_path(&path_str).map_err(|e| anyhow!("wallpaper error: {}", e))?;
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn run() -> Result<()> {
     let cfg = load_config()?;
     cfg.ensure_dirs()?;
     save_config(&cfg)?;
-
-    if cli.prune {
-        let removed = prune_duplicates(&cfg.save_path)?;
-        println!("Pruned {} duplicate(s)", removed);
-        return Ok(());
-    }
-
-    if cli.force {
-        println!("Note: --force is ignored; the Rust service deduplicates and rotates the desktop.");
-    }
 
     let client = reqwest::Client::builder()
         .connect_timeout(StdDuration::from_secs(10))
@@ -480,17 +470,168 @@ async fn main() -> Result<()> {
         .build()?;
 
     let seen = load_seen()?;
-    println!("Starting Bing wallpaper update...");
+    info!("starting wallpaper update");
     if let Some(meta) = find_new_image(&client, &cfg, &seen).await? {
         download_image(&client, &meta, &cfg.save_path).await?;
     } else {
-        println!("No new wallpapers today.");
+        info!("no new wallpapers today");
     }
 
     if cfg.auto_cleanup {
         cleanup_old_files(&cfg.save_path, cfg.cleanup_days)?;
     }
 
-    set_random_wallpaper(&cfg.save_path).await?;
+    set_random_wallpaper(&cfg.save_path)?;
+    info!("done");
     Ok(())
+}
+
+fn status() -> Result<()> {
+    let cfg = load_config()?;
+    let save_path = &cfg.save_path;
+    cfg.ensure_dirs()?;
+
+    let files: Vec<_> = fs::read_dir(save_path)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension().and_then(|x| x.to_str()) == Some("jpg")
+                && e.file_name().to_str().map(|n| n.starts_with("bing_")).unwrap_or(false)
+        })
+        .collect();
+
+    let mut hashes = HashSet::new();
+    for e in &files {
+        if let Ok(bytes) = fs::read(e.path()) {
+            let mut hasher = Md5::new();
+            hasher.update(&bytes);
+            let _ = hashes.insert(format!("{:x}", hasher.finalize()));
+        }
+    }
+
+    let seen = load_seen().unwrap_or_default();
+
+    println!("Config");
+    cfg.print();
+    println!();
+    println!("Archive: {}", save_path.display());
+    println!("  images: {}", files.len());
+    println!("  unique: {}", hashes.len());
+    println!("  seen keys: {}", seen.len());
+    Ok(())
+}
+
+fn cmd_config(show: bool, sets: Vec<String>) -> Result<()> {
+    let mut cfg = load_config()?;
+    cfg.ensure_dirs()?;
+
+    if !sets.is_empty() {
+        for kv in &sets {
+            let Some((k, v)) = kv.split_once('=') else {
+                return Err(anyhow!("expected KEY=VALUE, got: {}", kv));
+            };
+            let k = k.trim();
+            let v = v.trim();
+            cfg.set(k, v)?;
+        }
+        save_config(&cfg)?;
+    }
+
+    if show || sets.is_empty() {
+        cfg.print();
+    }
+    Ok(())
+}
+
+fn cmd_init() -> Result<()> {
+    let cfg = Config::default();
+    cfg.ensure_dirs()?;
+    let config_path = config_file()?;
+    if !config_path.exists() {
+        save_config(&cfg)?;
+        info!("created default config at {}", config_path.display());
+    } else {
+        info!("config already exists at {}", config_path.display());
+    }
+
+    let home = home_dir();
+    let bin = home.join(".local").join("bin").join("bing_wallpaper");
+    let plist_path = home
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.masrurimz.bingwallpaper.plist");
+    fs::create_dir_all(plist_path.parent().unwrap())?;
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.masrurimz.bingwallpaper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>run</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardErrorPath</key>
+    <string>{}</string>
+    <key>StandardOutPath</key>
+    <string>{}</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+        bin.display(),
+        config_dir()?.join("bing_wallpaper.err").display(),
+        config_dir()?.join("bing_wallpaper.out").display(),
+    );
+    fs::write(&plist_path, plist)?;
+    info!("wrote {}", plist_path.display());
+
+    let _ = Command::new("launchctl")
+        .args([
+            "bootout",
+            &format!("gui/{}", get_current_uid()),
+            &plist_path.to_string_lossy(),
+        ])
+        .output();
+    let status = Command::new("launchctl")
+        .args([
+            "bootstrap",
+            &format!("gui/{}", get_current_uid()),
+            &plist_path.to_string_lossy(),
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(anyhow!("launchctl bootstrap failed"));
+    }
+    info!("LaunchAgent loaded");
+    println!("Make sure {} exists and is executable.", bin.display());
+    Ok(())
+}
+
+fn cmd_prune() -> Result<()> {
+    let cfg = load_config()?;
+    let removed = prune_duplicates(&cfg.save_path)?;
+    println!("Pruned {} duplicate(s)", removed);
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    let cli = Cli::parse();
+    match cli.command.unwrap_or(Commands::Run) {
+        Commands::Run => run().await,
+        Commands::Prune => cmd_prune(),
+        Commands::Status => status(),
+        Commands::Config { show, set } => cmd_config(show, set),
+        Commands::Init => cmd_init(),
+    }
 }
