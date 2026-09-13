@@ -33,7 +33,11 @@ Commands:
   init    Create default config and install the LaunchAgent
 ```
 
-## Config
+```bash
+bing_wallpaper config              # interactive TUI form
+bing_wallpaper config --show       # print current config
+bing_wallpaper config --set RESOLUTION=FHD
+```
 
 `~/.config/bing-wallpaper/config` (KEY=value)
 
@@ -65,6 +69,7 @@ bing_wallpaper config --set RESOLUTION=FHD
 
 - `reqwest` / `tokio` — HTTP client
 - `serde_json` — Bing JSON parsing
+- `inquire` — interactive terminal prompts
 - `rust-ini` — config parsing
 - `rdev` — screen resolution detection
 - `wallpaper` — desktop wallpaper setting

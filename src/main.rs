@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Local;
 use clap::{Parser, Subcommand};
+use inquire::{Confirm, Select, Text};
 use ini::Ini;
+use rand::{seq::SliceRandom, thread_rng};
 use md5::{Digest, Md5};
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -533,6 +533,58 @@ fn cmd_config(show: bool, sets: Vec<String>) -> Result<()> {
             let v = v.trim();
             cfg.set(k, v)?;
         }
+        save_config(&cfg)?;
+    }
+
+    if !show && sets.is_empty() {
+        let resolutions = vec!["UHD", "FHD", "HD", "auto"];
+        let res_idx = resolutions
+            .iter()
+            .position(|&r| r == cfg.resolution)
+            .unwrap_or(0);
+        cfg.resolution = Select::new("Resolution", resolutions)
+            .with_starting_cursor(res_idx)
+            .prompt()?
+            .to_string();
+
+        cfg.auto_cleanup = Confirm::new("Auto cleanup?")
+            .with_default(cfg.auto_cleanup)
+            .prompt()?;
+
+        let days_default = cfg.cleanup_days.to_string();
+        let days = Text::new("Cleanup days")
+            .with_default(&days_default)
+            .prompt()?;
+        cfg.cleanup_days = days.parse().context("invalid CLEANUP_DAYS")?;
+
+        let save_default = cfg.save_path.to_string_lossy().into_owned();
+        let save = Text::new("Save path")
+            .with_default(&save_default)
+            .prompt()?;
+        cfg.save_path = expand_path(&save);
+
+        let modes = vec!["cycle", "single"];
+        let mode_idx = modes
+            .iter()
+            .position(|&r| r == cfg.region_mode)
+            .unwrap_or(0);
+        cfg.region_mode = Select::new("Region mode", modes)
+            .with_starting_cursor(mode_idx)
+            .prompt()?
+            .to_string();
+
+        if cfg.region_mode == "single" {
+            let regions: Vec<&str> = REGIONS.to_vec();
+            let region_idx = regions
+                .iter()
+                .position(|&r| r == cfg.region.as_str())
+                .unwrap_or(0);
+            cfg.region = Select::new("Region", regions)
+                .with_starting_cursor(region_idx)
+                .prompt()?
+                .to_string();
+        }
+
         save_config(&cfg)?;
     }
 
