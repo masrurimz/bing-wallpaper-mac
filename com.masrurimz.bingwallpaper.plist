@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.masrurimz.bingwallpaper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/masrurimz/.local/bin/bing_wallpaper</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardErrorPath</key>
+    <string>/Users/masrurimz/.config/bing-wallpaper/bing_wallpaper.err</string>
+    <key>StandardOutPath</key>
+    <string>/Users/masrurimz/.config/bing-wallpaper/bing_wallpaper.out</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

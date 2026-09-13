@@ -1,188 +1,76 @@
 # 🖼️ Bing Wallpaper for macOS
 
-Automatically update your macOS wallpaper with Bing's daily images from around the world.
+Bing daily wallpaper for macOS — now a Rust binary. The LaunchAgent just triggers it hourly; the binary does the rest.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-10.12+-brightgreen.svg)](https://www.apple.com/macos)
-[![Shell Script](https://img.shields.io/badge/Shell-Bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
+## Features
 
-## ✨ Features
+- Region cycling through 12 Bing markets
+- Deduplication by image content key (`OHR.{ID}`) across markets
+- Auto-cleanup of wallpapers older than `CLEANUP_DAYS`
+- Random shuffle of all saved wallpapers on every run
+- High quality: UHD, FHD, HD, or auto-detected
 
-- 🌍 **Region Cycling** - Rotates through 12 Bing regions for maximum wallpaper variety
-- 🔄 **Auto-updates** - Updates wallpaper every hour via LaunchAgent
-- 🖥️ **All Desktops** - Updates all Mission Control spaces and displays
-- 🖼️ **High Quality** - Supports 4K (UHD), Full HD, and HD resolutions
-- 🔍 **Auto-detection** - Automatically detects your screen resolution
-- 🧹 **Auto-cleanup** - Removes old wallpapers after configurable days
-- ⚙️ **Configurable** - Easy configuration via command line
-- 💪 **Lightweight** - Pure bash, minimal dependencies
-
-## 🌍 Supported Regions
-
-Each run cycles to the next region, giving you different wallpapers throughout the day:
-
-| Region | Country |
-|--------|---------|
-| en-US | 🇺🇸 United States |
-| en-GB | 🇬🇧 United Kingdom |
-| en-AU | 🇦🇺 Australia |
-| en-CA | 🇨🇦 Canada |
-| de-DE | 🇩🇪 Germany |
-| fr-FR | 🇫🇷 France |
-| ja-JP | 🇯🇵 Japan |
-| zh-CN | 🇨🇳 China |
-| pt-BR | 🇧🇷 Brazil |
-| es-ES | 🇪🇸 Spain |
-| it-IT | 🇮🇹 Italy |
-| en-IN | 🇮🇳 India |
-
-## 🚀 Installation
-
-### Prerequisites
-
-- macOS 10.12 or later
-- [jq](https://stedolan.github.io/jq/) (JSON processor)
-  ```bash
-  brew install jq
-  ```
-
-### Quick Install
+## Build
 
 ```bash
-git clone https://github.com/masrurimz/bing-wallpaper-mac.git ~/.local/share/bing-wallpaper-mac
-cd ~/.local/share/bing-wallpaper-mac
-./install.sh
+cargo build --release
 ```
 
-### Manual Install
+Binary: `target/release/bing_wallpaper`
+
+## Install
 
 ```bash
-# Copy script to local bin
-mkdir -p ~/.local/bin
-cp bing_wallpaper.sh ~/.local/bin/bing_wallpaper
-chmod +x ~/.local/bin/bing_wallpaper
-
-# Create config
-mkdir -p ~/.config/bing-wallpaper
-cat > ~/.config/bing-wallpaper/config << 'EOF'
-RESOLUTION=UHD
-AUTO_CLEANUP=true
-CLEANUP_DAYS=7
-SAVE_PATH=$HOME/.wallpapers
-REGION_MODE=cycle
-REGION=en-US
-EOF
-
-# Run manually
-~/.local/bin/bing_wallpaper --force
+cargo build --release
+cp target/release/bing_wallpaper ~/.local/bin/
+cp com.masrurimz.bingwallpaper.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist
 ```
 
-## ⚙️ Configuration
+## Config
+
+`~/.config/bing-wallpaper/config` (KEY=value)
+
+- `RESOLUTION` — `UHD` (default), `FHD`, `HD`, or `auto`
+- `AUTO_CLEANUP` — `true` / `false`
+- `CLEANUP_DAYS` — default `14`
+- `SAVE_PATH` — default `~/.wallpapers`
+- `REGION_MODE` — `cycle` (default) or `single`
+- `REGION` — default `en-US` (used when `REGION_MODE=single`)
+
+## Usage
 
 ```bash
-# Interactive configuration wizard
-bing_wallpaper --config
-
-# View current settings
-bing_wallpaper --show-config
-
-# Force update (skip cache check)
-bing_wallpaper --force
+bing_wallpaper          # one hourly update: fetch new, cleanup, set random desktop
+bing_wallpaper --prune  # remove byte-duplicate images from the archive
 ```
 
-### Configuration Options
+## How it works
 
-| Option | Values | Description |
-|--------|--------|-------------|
-| `RESOLUTION` | `auto`, `UHD`, `FHD`, `HD` | Wallpaper resolution |
-| `REGION_MODE` | `cycle`, `single` | Rotate regions or use fixed |
-| `REGION` | `en-US`, etc. | Fixed region (when mode=single) |
-| `AUTO_CLEANUP` | `true`, `false` | Auto-delete old wallpapers |
-| `CLEANUP_DAYS` | Number | Days to keep wallpapers |
-| `SAVE_PATH` | Path | Where to save wallpapers |
+1. The LaunchAgent runs the binary every hour.
+2. The binary fetches Bing's daily JSON for each market.
+3. It skips images already seen by their content key, and skips downloads if a matching file already exists.
+4. New images are saved to `~/.wallpapers` with a `.txt` sidecar.
+5. Old files are removed based on `CLEANUP_DAYS`.
+6. A random wallpaper from the archive is picked and applied to all desktops via `osascript`.
 
-## 🔄 Auto-Update Setup
-
-The install script creates a LaunchAgent that runs hourly. To set up manually:
+## Logs
 
 ```bash
-cat > ~/Library/LaunchAgents/com.$USER.bingwallpaper.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.$USER.bingwallpaper</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$HOME/.local/bin/bing_wallpaper</string>
-        <string>--force</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>3600</integer>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-launchctl load ~/Library/LaunchAgents/com.$USER.bingwallpaper.plist
+~/.config/bing-wallpaper/bing_wallpaper.out
+~/.config/bing-wallpaper/bing_wallpaper.err
 ```
 
-## 📁 File Structure
-
-```
-~/.local/bin/bing_wallpaper          # Main script
-~/.config/bing-wallpaper/
-├── config                            # Configuration file
-└── region_state                      # Current region index
-~/.wallpapers/                        # Downloaded wallpapers
-├── bing_20240122_1200_en-US_UHD.jpg
-├── bing_20240122_1200_en-US_UHD.txt  # Metadata
-└── ...
-~/Library/LaunchAgents/com.$USER.bingwallpaper.plist
-```
-
-## 📝 Logs
+## Uninstall
 
 ```bash
-# View logs
-cat ~/.wallpapers/bing_wallpaper.out
-cat ~/.wallpapers/bing_wallpaper.err
-```
-
-## 🗑️ Uninstallation
-
-```bash
-./uninstall.sh
-```
-
-Or manually:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.$USER.bingwallpaper.plist
-rm ~/Library/LaunchAgents/com.$USER.bingwallpaper.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist
+rm ~/Library/LaunchAgents/com.masrurimz.bingwallpaper.plist
 rm ~/.local/bin/bing_wallpaper
 rm -rf ~/.config/bing-wallpaper
-rm -rf ~/.wallpapers  # Optional: keep your wallpapers
+# optional: rm -rf ~/.wallpapers
 ```
 
-## 🤝 Contributing
+## License
 
-Contributions welcome! Feel free to:
-- Report bugs
-- Suggest new regions
-- Add features (day/night mode coming soon!)
-
-## 📝 License
-
-[MIT License](LICENSE) - feel free to use and modify!
-
-## 🙏 Credits
-
-- Forked from [luoling8192/bing-wallpaper-mac](https://github.com/luoling8192/bing-wallpaper-mac)
-- Bing for providing beautiful daily images
-
----
-
-Made with ❤️ for macOS users who appreciate beautiful wallpapers
+[MIT](LICENSE)
